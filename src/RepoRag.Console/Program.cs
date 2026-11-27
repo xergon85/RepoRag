@@ -1,12 +1,20 @@
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using RepoRag.Core.Chunking;
+using RepoRag.Core.Embedding;
 using RepoRag.Core.Indexing;
+using RepoRag.Core.Providers;
 
-// Usage: dotnet run --project src/RepoRag.Console -- index <repo-path> [--name <name>] [--include docs,adr,README.md]
-// Writes ~/.reporag/<name>/chunks.json (ADR 0001, 0002). config.json and vectors come in later slices.
+
+// Usage: dotnet run --project src/RepoRag.Console -- index <repo-path> [--name <name>] [--include docs,adr,README.md] [--rebuild]
+// Needs an OpenCode key: user secrets "OpenCode:ApiKey" (Rider: Tools > .NET User Secrets) or env OPENCODE_API_KEY.
+// Optional: "OpenCode:EmbeddingModel" / OPENCODE_EMBEDDING_MODEL (default text-embedding-3-small).
+
+const string usage = "Usage: index <repo-path> [--name <name>] [--include docs,adr,README.md] [--rebuild]";
 
 if (args is not ["index", var repoArg, ..])
 {
-    Console.Error.WriteLine("Usage: index <repo-path> [--name <name>] [--include docs,adr,README.md]");
+    Console.Error.WriteLine(usage);
     return 1;
 }
 
@@ -16,33 +24,45 @@ if (!Directory.Exists(repoPath))
     Console.Error.WriteLine($"Not a folder: {repoPath}");
     return 1;
 }
+var config = new ConfigurationBuilder()
+    .AddUserSecrets<Program>()
+    .AddEnvironmentVariables()
+    .Build();
 
-var nameIndex = Array.IndexOf(args, "--name");
-var name = nameIndex >= 0 && nameIndex + 1 < args.Length
-    ? args[nameIndex + 1]
-    : new DirectoryInfo(repoPath).Name;
-
-var includeIndex = Array.IndexOf(args, "--include");
-IReadOnlyList<string>? include = includeIndex >= 0 && includeIndex + 1 < args.Length
-    ? args[includeIndex + 1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-    : null; // ADR 0004 default: docs/ plus root .md files
-
-var indexDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".reporag", name);
-var chunker = new HeadingChunker(new ChunkingOptions());
-
-var chunks = new List<Chunk>();
-var files = RepoScanner.FindMarkdownFiles(repoPath, include);
-Console.WriteLine(include is null ? "Reading (default: docs/ + root .md):" : $"Reading ({string.Join(", ", include)}):");
-foreach (var file in files) Console.WriteLine($"  {file}");
-
-foreach (var file in files)
+var apiKey = config["OpenCode:ApiKey"] ?? config["OPENCODE_API_KEY"];
+if (string.IsNullOrWhiteSpace(apiKey))
 {
-    var content = await File.ReadAllTextAsync(Path.Combine(repoPath, file));
-    chunks.AddRange(await chunker.ChunkAsync(file, content));
+    Console.Error.WriteLine("Set OpenCode:ApiKey in user secrets, or OPENCODE_API_KEY (see .env.example).");
+    return 1;
 }
 
-await ChunkFileWriter.WriteAsync(indexDir, chunks);
+var name = Option("--name") ?? new DirectoryInfo(repoPath).Name;
+IReadOnlyList<string>? include = Option("--include")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+var rebuild = args.Contains("--rebuild");
+var embeddingModel = config["OpenCode:EmbeddingModel"] ?? config["OPENCODE_EMBEDDING_MODEL"] ?? "text-embedding-3-small";
+var chunking = new ChunkingOptions();
 
-Console.WriteLine($"{chunks.Count} chunks from {chunks.Select(c => c.SourcePath).Distinct().Count()} files");
-Console.WriteLine($"Name '{name}' → {Path.Combine(indexDir, ChunkFileWriter.FileName)}");
-return 0;
+var generator = OpenCode.CreateClient(apiKey).GetEmbeddingClient(embeddingModel).AsIEmbeddingGenerator();
+var indexer = new RepoIndexer(new HeadingChunker(chunking), new CachedEmbedder(generator), embeddingModel, chunking.MaxWords);
+var store = IndexStore.ForName(name);
+
+try
+{
+    var result = await indexer.IndexAsync(repoPath, store, include, rebuild);
+    Console.WriteLine(include is null ? "Read (stored allowlist or default: docs/ + root .md):" : $"Read ({string.Join(", ", include)}):");
+    foreach (var path in result.Paths) Console.WriteLine($"  {path}");
+    Console.WriteLine($"Index '{name}' → {store.Directory}");
+    Console.WriteLine($"{result.Files} files, {result.Chunks} chunks, {result.Embedded} embedded, {result.Reused} reused");
+    return 0;
+}
+catch (Exception e) when (e is IndexNameConflictException or EmbeddingModelMismatchException)
+{
+    Console.Error.WriteLine(e.Message);
+    return 1;
+}
+
+string? Option(string flag)
+{
+    var i = Array.IndexOf(args, flag);
+    return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+}
