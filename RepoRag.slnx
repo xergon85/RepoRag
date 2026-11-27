@@ -8,4 +8,7 @@
     <Project Path="src/RepoRag.Console/RepoRag.Console.csproj" />
     <Project Path="src/RepoRag.Api/RepoRag.Api.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RepoRag.Core.Tests/RepoRag.Core.Tests.csproj" />
+  </Folder>
 </Solution>
