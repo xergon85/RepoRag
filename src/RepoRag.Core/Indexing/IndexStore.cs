@@ -37,6 +37,9 @@ public sealed class IndexStore(string directory)
     public Task WriteChunksAsync(IReadOnlyList<Chunk> chunks, CancellationToken ct = default)
         => ChunkFileWriter.WriteAsync(Directory, chunks, ct);
 
+    public async Task<IReadOnlyList<Chunk>> ReadChunksAsync(CancellationToken ct = default)
+        => await ReadAsync<List<Chunk>>(ChunkFileWriter.FileName, ct) ?? [];
+
     public async Task<IReadOnlyDictionary<string, float[]>> ReadVectorsAsync(CancellationToken ct = default)
         => await ReadAsync<Dictionary<string, float[]>>(VectorsFile, ct) ?? new Dictionary<string, float[]>();
 
