@@ -1,0 +1,25 @@
+# .NET
+bin/
+obj/
+*.user
+/packages/
+
+# IDEs
+.idea/
+.vs/
+.vscode/
+riderModule.iml
+/_ReSharper.Caches/
+
+# Secrets
+.env
+*.env
+!.env.example
+
+# Angular (web/, Day 3)
+node_modules/
+web/dist/
+web/.angular/
+
+# OS
+.DS_Store
