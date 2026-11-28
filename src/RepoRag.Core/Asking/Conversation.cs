@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Agents.AI;
@@ -40,9 +42,27 @@ public sealed partial class Conversation(IChatClient chatClient, DocSearch searc
     private readonly List<string> _answers = [];
     private AgentSession? _session;
     private int _toolSearches;
+    private readonly ConcurrentQueue<string> _searchesToReport = new(); // filled by the tool, emitted as events
+    private Answer? _last;
+
+    public int SearchesUsed => _toolSearches;
 
     /// <summary>The quick answer: one search on the question, one model call, no tools.</summary>
     public async Task<Answer> AskAsync(string question, CancellationToken ct = default)
+    {
+        await foreach (var _ in AskStreamingAsync(question, ct)) { }
+        return _last!;
+    }
+
+    /// <summary>Continues the same conversation with the search tool, and adds to the answer.</summary>
+    public async Task<Answer> DigDeeperAsync(CancellationToken ct = default)
+    {
+        await foreach (var _ in DigDeeperStreamingAsync(ct)) { }
+        return _last!;
+    }
+
+    /// <summary>The quick answer as a stream of events (ADR 0007).</summary>
+    public async IAsyncEnumerable<AskEvent> AskStreamingAsync(string question, [EnumeratorCancellation] CancellationToken ct = default)
     {
         _session = await _agent.CreateSessionAsync(ct);
 
@@ -50,12 +70,11 @@ public sealed partial class Conversation(IChatClient chatClient, DocSearch searc
         Remember(hits);
 
         var prompt = $"Question: {question}\n\nDocumentation excerpts:\n\n{Format(hits)}";
-        var response = await _agent.RunAsync(prompt, _session, cancellationToken: ct);
-        return Record(response.Text);
+        await foreach (var e in Stream(prompt, options: null, ct)) yield return e;
     }
 
-    /// <summary>Continues the same conversation with the search tool, and adds to the answer.</summary>
-    public async Task<Answer> DigDeeperAsync(CancellationToken ct = default)
+    /// <summary>Dig deeper as a stream of events, including the agent's searches (ADR 0007).</summary>
+    public async IAsyncEnumerable<AskEvent> DigDeeperStreamingAsync([EnumeratorCancellation] CancellationToken ct = default)
     {
         if (_session is null) throw new InvalidOperationException("Ask a question before digging deeper.");
 
@@ -63,8 +82,33 @@ public sealed partial class Conversation(IChatClient chatClient, DocSearch searc
             "Search the repository's documentation. Returns the closest excerpts with their sources.");
         var options = new ChatClientAgentRunOptions(new ChatOptions { Tools = [tool] });
 
-        var response = await _agent.RunAsync(DigDeeperPrompt, _session, options, ct);
-        return Record(response.Text);
+        await foreach (var e in Stream(DigDeeperPrompt, options, ct)) yield return e;
+    }
+
+    /// <summary>
+    /// Runs the agent streaming: text as it comes, the tool's searches as they happen,
+    /// and the sources once the text is complete (they can only be checked against the whole text).
+    /// </summary>
+    private async IAsyncEnumerable<AskEvent> Stream(string prompt, AgentRunOptions? options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var text = new StringBuilder();
+
+        await foreach (var update in _agent.RunStreamingAsync(prompt, _session, options, ct))
+        {
+            while (_searchesToReport.TryDequeue(out var query)) yield return new SearchingEvent(query);
+
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                text.Append(update.Text);
+                yield return new TextEvent(update.Text);
+            }
+        }
+        while (_searchesToReport.TryDequeue(out var query)) yield return new SearchingEvent(query);
+
+        _last = Record(text.ToString());
+        yield return new SourcesEvent(
+            _last.Cited.Select(SourceRef.From).ToList(),
+            _last.AlsoSearched.Select(SourceRef.From).ToList());
     }
 
     /// <summary>The tool. It guards its own budget: past the limit it answers "limit reached" instead of searching.</summary>
@@ -74,6 +118,7 @@ public sealed partial class Conversation(IChatClient chatClient, DocSearch searc
             return $"Search limit reached ({MaxToolSearches} searches). Answer with what you have.";
 
         _toolSearches++;
+        _searchesToReport.Enqueue(query);
         var hits = await search.SearchAsync(query, QuickTop, ct);
         Remember(hits);
         return hits.Count > 0 ? Format(hits) : "No matching excerpts.";

@@ -43,6 +43,20 @@ public sealed class FileIndexSource(string currentEmbeddingModel, string? indexR
         return collection;
     }
 
+    /// <summary>Every folder in the index root that holds a config.json, i.e. a complete index (ADR 0005).</summary>
+    public Task<IReadOnlyList<string>> ListAsync(CancellationToken ct = default)
+    {
+        IReadOnlyList<string> names = Directory.Exists(_root)
+            ? Directory.EnumerateDirectories(_root)
+                .Where(dir => File.Exists(Path.Combine(dir, IndexStore.ConfigFile)))
+                .Select(Path.GetFileName)
+                .OfType<string>()
+                .Order(StringComparer.Ordinal)
+                .ToList()
+            : [];
+        return Task.FromResult(names);
+    }
+
     private static VectorStoreCollectionDefinition Schema(int dimensions) => new()
     {
         Properties =

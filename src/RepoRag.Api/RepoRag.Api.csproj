@@ -4,6 +4,8 @@
         <TargetFramework>net11.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <!-- Same as RepoRag.Console, so both read the same user secrets (OpenCode key). -->
+        <UserSecretsId>255a8afc-2f9f-4ab8-b411-0d65a1bc1749</UserSecretsId>
     </PropertyGroup>
 
     <ItemGroup>

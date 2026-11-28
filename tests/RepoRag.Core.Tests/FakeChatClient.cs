@@ -30,6 +30,15 @@ public sealed class FakeChatClient : IChatClient
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var response = await GetResponseAsync(messages, options, cancellationToken);
+
+        // Plain text replies stream word by word, like a real model; tool calls come as one update.
+        if (response.Messages is [{ Contents: [TextContent text] }])
+        {
+            foreach (var piece in System.Text.RegularExpressions.Regex.Split(text.Text, @"(?<=\s)"))
+                if (piece.Length > 0) yield return new ChatResponseUpdate(ChatRole.Assistant, piece);
+            yield break;
+        }
+
         foreach (var update in response.ToChatResponseUpdates()) yield return update;
     }
 

@@ -9,4 +9,7 @@ namespace RepoRag.Core.Search;
 public interface IIndexSource
 {
     Task<VectorStoreCollection<string, DocRecord>> OpenAsync(string indexName, CancellationToken ct = default);
+
+    /// <summary>The names of the indexes this source can open (ADR 0007).</summary>
+    Task<IReadOnlyList<string>> ListAsync(CancellationToken ct = default);
 }
